@@ -259,7 +259,6 @@ export default function AgentChatPane() {
 
         if (
           candidate.codexSessionId === event.codexSessionId
-          && candidate.kind !== 'status'
           && candidate.kind !== 'tool_result'
         ) {
           break;
@@ -580,7 +579,7 @@ export default function AgentChatPane() {
           ...current,
           {
             id: `coding-agent-${sessionId}-${Date.now()}`,
-            source: 'codex',
+            source: 'coding-agent',
             codexSessionId: sessionId,
             agentId: activeSession.agentId,
             role: 'assistant',
@@ -1979,6 +1978,15 @@ function makeStyles(colors: ThemeColorPalette) {
     },
     toolContent: {
       flex: 1,
+    },
+    toolCopyButton: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      minWidth: 24,
+      minHeight: 24,
+      marginLeft: 2,
+      borderRadius: 7,
+      backgroundColor: withAlpha(colors.command, 0.10),
     },
     toolState: {
       marginTop: 3,

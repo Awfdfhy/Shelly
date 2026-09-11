@@ -1268,7 +1268,7 @@ export async function runAgentNow(
   const turn = runAgentNowInner(agentId, runCommand, options);
   inFlightAgentRuns.set(agentId, turn);
   try {
-    await turn;
+    return await turn;
   } finally {
     // Only clear the map entry if it still points at THIS turn — defensive,
     // though under the guard above no other writer can have replaced it.

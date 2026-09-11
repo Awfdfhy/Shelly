@@ -50,6 +50,8 @@ export type CodexPtyCandidate = {
 };
 
 export type AgentChatEvent = {
+  agentId?: string;
+
   id: string;
   source: 'codex';
   codexSessionId: string;
@@ -66,6 +68,9 @@ export type AgentChatEvent = {
 };
 
 export type AgentChatSession = {
+  source?: 'codex' | 'coding-agent';
+  agentId?: string;
+
   codexSessionId: string;
   projectName: string;
   currentStatus: string;
