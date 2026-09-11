@@ -93,7 +93,7 @@ export async function persistAgentDraft<T, C, U extends Partial<Agent>>(args: {
   create: (params: C) => T;
   update: (
     agentId: string,
-    partial: Partial<Agent>,
+    partial: U,
     runCommand: (cmd: string) => Promise<string>,
   ) => Promise<T | null>;
 }): Promise<{ agent: T | null; edited: boolean }> {

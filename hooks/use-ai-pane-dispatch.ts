@@ -3745,7 +3745,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           && (editingAgent.autonomous ?? false) !== confirmed.autonomous;
         const persistedTool = editingAgent && !autonomousChanged ? editingAgent.tool : tool;
         const persistedRunOn = editingAgent && !autonomousChanged ? editingAgent.runOn : runOn;
-        const agentFields: Partial<Agent> = {
+        const agentFields = {
           name: confirmed.name,
           description: confirmed.prompt.slice(0, 120),
           prompt: confirmed.prompt,
