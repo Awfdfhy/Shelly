@@ -1323,15 +1323,45 @@ export default function TerminalScreen() {
     return () => sub.remove();
   }, [paneId, focusedPaneId, pasteToTerminal]);
 
-  const pasteClipboardToTerminal = useCallback(() => {
+  const [pasteDiagnostics, setPasteDiagnostics] = useState<{
+  length: number;
+  clipboardMs: number;
+  pasteMs: number;
+  totalMs: number;
+} | null>(null);
+
+const pasteClipboardToTerminal = useCallback(() => {
     if (!activeNativeSessionId) return;
     if (activeSessionRecordId) {
       markNativeSessionUserActivity(activeSessionRecordId, activeNativeSessionId);
     }
-    return TerminalEmulator.pasteClipboardToSession(activeNativeSessionId).catch((err) => {
-      console.warn('[Terminal] pasteClipboardToSession failed:', err);
-      throw err;
-    });
+    return TerminalEmulator.pasteClipboardToSession(activeNativeSessionId)
+
+      .then((diagnostics) => {
+
+        setPasteDiagnostics({
+
+          length: diagnostics.length,
+
+          clipboardMs: diagnostics.clipboardMs,
+
+          pasteMs: diagnostics.pasteMs,
+
+          totalMs: diagnostics.totalMs,
+
+        });
+
+        return diagnostics;
+
+      })
+
+      .catch((err) => {
+
+        console.warn('[Terminal] pasteClipboardToSession failed:', err);
+
+        throw err;
+
+      });
   }, [activeNativeSessionId, activeSessionRecordId]);
 
   // bug #44: Voice input routing.
@@ -1674,7 +1704,41 @@ export default function TerminalScreen() {
       {/* Command Key Bar (Ctrl+C, Tab, up, down, Paste) + Attach/Voice */}
       {isConnected && (
         <View style={[styles.keyBarDock, { bottom: terminalKeyboardInset }]} pointerEvents="box-none">
-          <CommandKeyBar
+          {pasteDiagnostics && (
+  <View
+    style={{
+      marginHorizontal: 12,
+      marginBottom: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: 'rgba(100, 180, 255, 0.25)',
+      backgroundColor: 'rgba(20, 30, 40, 0.96)',
+    }}
+  >
+    <Text
+      style={{
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#9CDCFE',
+        marginBottom: 3,
+      }}
+    >
+      Paste Diagnostics
+    </Text>
+    <Text
+      style={{
+        fontSize: 10,
+        color: '#C8D1DC',
+      }}
+    >
+      Length: {pasteDiagnostics.length}  •  Clipboard: {pasteDiagnostics.clipboardMs} ms  •  Paste: {pasteDiagnostics.pasteMs} ms  •  Total: {pasteDiagnostics.totalMs} ms
+    </Text>
+  </View>
+)}
+
+<CommandKeyBar
             sendKey={sendKey}
             sendText={sendToTerminal}
             sendPaste={pasteToTerminal}

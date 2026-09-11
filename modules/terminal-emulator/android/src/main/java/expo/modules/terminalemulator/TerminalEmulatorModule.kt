@@ -634,16 +634,62 @@ class TerminalEmulatorModule : Module() {
         }
 
         AsyncFunction("pasteClipboardToSession") { sessionId: String ->
+            val startedAt = System.nanoTime()
+
             val session = sessions[sessionId]
                 ?: throw IllegalArgumentException("Session $sessionId not found")
+
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
+
+            val clipboardStartedAt = System.nanoTime()
+
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                 ?: throw IllegalStateException("Clipboard service unavailable")
-            val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
-            Log.d("ShellyPaste", "pasteClipboardToSession session=$sessionId len=${text.length}")
+
+            val text = clipboard.primaryClip
+                ?.getItemAt(0)
+                ?.coerceToText(context)
+                ?.toString()
+                .orEmpty()
+
+            val clipboardMs = (System.nanoTime() - clipboardStartedAt) / 1_000_000
+
             if (text.isNotEmpty()) {
+                val pasteStartedAt = System.nanoTime()
                 session.paste(text)
+                val pasteMs = (System.nanoTime() - pasteStartedAt) / 1_000_000
+                val totalMs = (System.nanoTime() - startedAt) / 1_000_000
+
+                Log.d(
+                    "ShellyPaste",
+                    "nativePaste session=$sessionId len=${text.length}" +
+                        " clipboardMs=$clipboardMs pasteMs=$pasteMs totalMs=$totalMs"
+                )
+
+                return@AsyncFunction mapOf(
+                    "sessionId" to sessionId,
+                    "length" to text.length,
+                    "clipboardMs" to clipboardMs,
+                    "pasteMs" to pasteMs,
+                    "totalMs" to totalMs
+                )
+            } else {
+                val totalMs = (System.nanoTime() - startedAt) / 1_000_000
+
+                Log.d(
+                    "ShellyPaste",
+                    "nativePaste session=$sessionId len=0" +
+                        " clipboardMs=$clipboardMs pasteMs=0 totalMs=$totalMs"
+                )
+
+                return@AsyncFunction mapOf(
+                    "sessionId" to sessionId,
+                    "length" to 0,
+                    "clipboardMs" to clipboardMs,
+                    "pasteMs" to 0L,
+                    "totalMs" to totalMs
+                )
             }
         }
 

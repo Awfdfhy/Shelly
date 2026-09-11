@@ -119,7 +119,13 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     libDir: string;
   }>;
   pasteToSession(sessionId: string, text: string): Promise<void>;
-  pasteClipboardToSession(sessionId: string): Promise<void>;
+  pasteClipboardToSession(sessionId: string): Promise<{
+    sessionId: string;
+    length: number;
+    clipboardMs: number;
+    pasteMs: number;
+    totalMs: number;
+  }>;
   setScouterEnabled(enabled: boolean): Promise<void>;
   getScouterDebugInfo(): Promise<string>;
   refreshScouter?(): Promise<string>;
