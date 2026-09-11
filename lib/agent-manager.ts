@@ -1228,7 +1228,7 @@ async function persistRememberFact(
  * unattended AlarmManager fire itself to observe an attended chain's
  * in-progress state, which lives outside this process; see DEFERRED.md.
  */
-const inFlightAgentRuns = new Map<string, Promise<void>>();
+const inFlightAgentRuns = new Map<string, Promise<AgentRunLog | undefined>>();
 /**
  * Process-lifetime identities of logs produced by the foreground attended path.
  * Unlike inFlightAgentRuns, entries are deliberately never cleared: once a
@@ -1433,7 +1433,7 @@ async function runAgentNowInner(
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await updateReusedSkillFromRun(agentId, runCommand);
-  return completedLog;
+  return;
 }
 
 /**
@@ -2159,7 +2159,7 @@ async function runAgentOrchestratedBody(
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await updateReusedSkillFromRun(agentId, runCommand);
-  return completedLog;
+  return;
 }
 
 /** List the agent's run-log file paths on disk (best-effort). */

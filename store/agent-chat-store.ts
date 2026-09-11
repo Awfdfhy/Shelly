@@ -53,7 +53,7 @@ export type AgentChatEvent = {
   agentId?: string;
 
   id: string;
-  source: 'codex';
+  source: 'codex' | 'coding-agent';
   codexSessionId: string;
   ptySessionId?: string;
   role: AgentChatRole;

@@ -1,3 +1,4 @@
+export type { CodingToolName } from './coding-agent-loop';
 /**
  * Tools exposed to Shelly's Coding Agent.
  *

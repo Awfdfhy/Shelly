@@ -90,20 +90,20 @@ type ScouterCodexPetDebug = {
   localRootExists?: boolean;
   localDirectoryCount?: number;
   localDirectories?: string[];
-  petRoots?: Array<{
+  petRoots?: {
     path?: string;
     exists?: boolean;
     directoryCount?: number;
-  }>;
+  }[];
   availablePetCount?: number;
   validPetCount?: number;
-  availablePets?: Array<{
+  availablePets?: {
     id?: string;
     source?: string;
     valid?: boolean;
     selected?: boolean;
     spritesheetBytes?: number;
-  }>;
+  }[];
 };
 
 type ScouterDebugInfo = {

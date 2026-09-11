@@ -282,6 +282,7 @@ const LABELS: Record<ToolChoice['type'], string> = {
   cerebras: 'Cerebras',
   groq: 'Groq',
   openrouter: 'OpenRouter',
+  'coding-agent': 'Coding Agent',
   'ab-article-eval': 'A/B Article Eval',
   auto: 'Auto',
 };
