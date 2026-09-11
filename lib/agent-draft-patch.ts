@@ -85,13 +85,17 @@ export function agentToParsedAgentDraft(agent: Agent): ParsedAgentDraft {
 }
 
 /** Single decision point for confirm: edit in place, or preserve creation. */
-export async function persistAgentDraft<T, C, U>(args: {
+export async function persistAgentDraft<T, C, U extends Partial<Agent>>(args: {
   editingAgentId?: string;
   createParams: C;
   updatePartial: U;
   runCommand: (cmd: string) => Promise<string>;
   create: (params: C) => T;
-  update: (agentId: string, partial: U, runCommand: (cmd: string) => Promise<string>) => Promise<T | null>;
+  update: (
+    agentId: string,
+    partial: Partial<Agent>,
+    runCommand: (cmd: string) => Promise<string>,
+  ) => Promise<T | null>;
 }): Promise<{ agent: T | null; edited: boolean }> {
   if (args.editingAgentId) {
     return {

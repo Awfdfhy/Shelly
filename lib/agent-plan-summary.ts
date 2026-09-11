@@ -586,7 +586,7 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     autonomous: draft.autonomous ?? false,
     memory: draft.memory,
     skillId: draft.matchedSkill?.id,
-    orchestrationSteps: draft.orchestrationSteps,
+    orchestrationSteps: draft.orchestrationSteps ?? undefined,
     notificationTrigger: draft.notificationTrigger ?? null,
     startNotBefore: draft.startNotBefore ?? null,
     // 2026-07-28 bug fix: pass through unedited — see

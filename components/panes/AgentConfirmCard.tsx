@@ -62,7 +62,7 @@ export interface ConfirmedAgentDraft {
   /** Phase 4/6: ordered step instructions for a multi-step (orchestrated) agent.
    *  Each entry is either a plain string (auto-routed) or a { instruction, tool }
    *  object pinning a concrete tool for that step (Phase 6). */
-  orchestrationSteps?: string | AgentOrchestrationStep[];
+  orchestrationSteps?: Array<string | AgentOrchestrationStep>;
   /** G6: hard character budget for the final orchestration output. */
   charLimit?: number;
   /** NOTIFY-001 Increment 2: notification-package allowlist that triggers this agent. */
@@ -193,7 +193,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // api-call toggle/editor below, and what handleConfirm actually submits —
   // NOT draft.orchestrationSteps directly, so an api-call edit here survives
   // to createAgent.
-  const [orchestrationSteps, setOrchestrationSteps] = useState<string | AgentOrchestrationStep[] | undefined>(
+  const [orchestrationSteps, setOrchestrationSteps] = useState<Array<string | AgentOrchestrationStep> | undefined>(
     draft.orchestrationSteps,
   );
   const canUseApiCall = !!(orchestrationSteps && orchestrationSteps.length >= 2);
