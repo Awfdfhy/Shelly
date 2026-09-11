@@ -650,6 +650,7 @@ export type ToolChoice =
   | { type: 'local'; model?: string }
   | { type: 'perplexity'; model?: string }
   | { type: 'ab-article-eval'; localModel?: string; codexCmd?: string }
+  | { type: 'coding-agent'; model?: string }
   | { type: 'auto' };
 
 /**

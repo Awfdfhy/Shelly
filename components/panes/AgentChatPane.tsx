@@ -1,4 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { runAgentNow } from '@/lib/agent-manager';
 import {
   ActivityIndicator,
   Alert,
@@ -15,6 +16,8 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
+import * as Clipboard from 'expo-clipboard';
 import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
 import { useAddPane } from '@/hooks/use-add-pane';
 import {
@@ -212,9 +215,82 @@ export default function AgentChatPane() {
   const timelineEvents = useMemo(() => {
     const sessionId = activeSession?.codexSessionId;
     if (!sessionId) return [];
-    return mergeVisibleAndLocalReplyEvents(visibleEvents, localReplyEvents, sessionId);
+
+    const events = mergeVisibleAndLocalReplyEvents(
+      visibleEvents,
+      localReplyEvents,
+      sessionId,
+    );
+
+    // TOOL BUBBLE DATA V1:
+    // Pair a tool_start with its following tool_result so the chat
+    // presents one logical tool bubble instead of two separate rows.
+    const resultIndexes = new Set<number>();
+    const merged: AgentChatEvent[] = [];
+
+    for (let i = 0; i < events.length; i += 1) {
+      const event = events[i];
+
+      if (event.kind !== 'tool_start') {
+        if (event.kind === 'tool_result' && resultIndexes.has(i)) continue;
+        merged.push(event);
+        continue;
+      }
+
+      let resultIndex = -1;
+      for (let j = i + 1; j < events.length; j += 1) {
+        const candidate = events[j];
+        if (candidate.kind !== 'tool_result') continue;
+
+        const sameTool =
+          Boolean(event.toolName)
+          && Boolean(candidate.toolName)
+          && event.toolName === candidate.toolName;
+
+        const sameText =
+          !event.toolName
+          && !candidate.toolName
+          && event.text === candidate.text;
+
+        if (sameTool || sameText) {
+          resultIndex = j;
+          break;
+        }
+
+        if (
+          candidate.codexSessionId === event.codexSessionId
+          && candidate.kind !== 'status'
+          && candidate.kind !== 'tool_result'
+        ) {
+          break;
+        }
+      }
+
+      if (resultIndex >= 0) {
+        const result = events[resultIndex];
+        resultIndexes.add(resultIndex);
+
+        // Keep the start event's ID so FlatList treats this as the
+        // same logical chat item while its visible state changes.
+        merged.push({
+          ...result,
+          id: event.id,
+          timestamp: result.timestamp,
+          toolName: event.toolName || result.toolName,
+          text: event.text || result.text,
+          toolState: result.toolState ?? 'completed',
+          toolResult: result.toolResult,
+        });
+      } else {
+        merged.push(event);
+      }
+    }
+
+    return merged;
   }, [activeSession?.codexSessionId, localReplyEvents, visibleEvents]);
   const latestTimelineEventId = timelineEvents[timelineEvents.length - 1]?.id ?? null;
+  const latestTimelineEventState =
+    timelineEvents[timelineEvents.length - 1]?.toolState ?? '';
   const latestApprovalEventId = useMemo(
     () => [...visibleEvents].reverse().find((event) => event.kind === 'approval')?.id ?? null,
     [visibleEvents],
@@ -467,6 +543,76 @@ export default function AgentChatPane() {
     const sentText = normalizeReplyTextForDisplay(draft);
     const sentAt = Date.now();
     setReplySending(true);
+    if (activeSession.source === 'coding-agent' && activeSession.agentId) {
+      const prompt = draft.trim();
+      setDraft('');
+
+      setLocalReplyEvents((current) => pruneLocalReplyEvents([
+        ...current,
+        buildLocalReplyEvent(sessionId, sentText, sentAt),
+      ]));
+
+      setReplyNotice({
+        status: 'sent',
+        sessionId,
+        text: sentText,
+        sentAt,
+      });
+
+      try {
+        const completedRun = await runAgentNow(
+          activeSession.agentId,
+          async (command: string) => {
+            const result = await TerminalEmulator.runCommand?.(command);
+            return typeof result === 'string' ? result : '';
+          },
+          {
+            promptOverride: prompt,
+          },
+        );
+
+        const agentOutput =
+          completedRun?.outputPreview?.trim()
+          || completedRun?.errorMessage?.trim()
+          || 'Coding Agent completed the run.';
+
+        setLocalReplyEvents((current) => pruneLocalReplyEvents([
+          ...current,
+          {
+            id: `coding-agent-${sessionId}-${Date.now()}`,
+            source: 'codex',
+            codexSessionId: sessionId,
+            agentId: activeSession.agentId,
+            role: 'assistant',
+            kind: 'assistant_message',
+            text: agentOutput,
+            timestamp: Date.now(),
+            rawEvent: {
+              source: 'coding-agent',
+              run: completedRun,
+            },
+          },
+        ]));
+
+        setReplyReadiness(null);
+        setTimeout(() => void refresh(), 350);
+        setTimeout(() => void refresh(), 1_200);
+        setTimeout(() => void refresh(), 2_500);
+      } catch {
+        setReplyReadiness({
+          ready: false,
+          reason: 'screen_unavailable',
+        });
+        Alert.alert(
+          t('agent_chat.reply_not_ready_title'),
+          t('agent_chat.reply_failed_body'),
+        );
+      } finally {
+        setReplySending(false);
+      }
+      return;
+    }
+
     const result = await sendCodexReply(activeSession, draft).catch(() => ({
       status: 'failed' as const,
       reason: 'screen_unavailable' as const,
@@ -656,7 +802,7 @@ export default function AgentChatPane() {
           ref={listRef}
           style={styles.list}
           data={timelineEvents}
-          extraData={`${activeSession?.codexSessionId ?? ''}:${latestTimelineEventId ?? ''}:${timelineEvents.length}`}
+          extraData={`${activeSession?.codexSessionId ?? ''}:${latestTimelineEventId ?? ''}:${timelineEvents.length}:${latestTimelineEventState}`}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
           contentContainerStyle={styles.listContent}
@@ -978,6 +1124,16 @@ function AgentChatBubble({
 }) {
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
+  const copyBubble = useCallback(async () => {
+    const parts = [
+      event.toolName || event.text,
+      event.toolState ? `Status: ${event.toolState}` : undefined,
+      event.toolResult || undefined,
+    ].filter(Boolean);
+
+    await Clipboard.setStringAsync(parts.join('\\n'));
+  }, [event.text, event.toolName, event.toolResult, event.toolState]);
+
   if (event.kind === 'status') {
     return (
       <View style={styles.statusRow}>
@@ -992,13 +1148,65 @@ function AgentChatBubble({
   }
 
   if (event.kind === 'tool_start' || event.kind === 'tool_result') {
+    const toolState = event.toolState
+      ?? (event.kind === 'tool_start' ? 'running' : 'completed');
+    const toolRunning = toolState === 'running';
+    const toolFailed = toolState === 'failed';
+    const toolIcon = toolFailed
+      ? 'error-outline'
+      : toolRunning
+        ? 'sync'
+        : 'check-circle';
+    const toolLabel = toolFailed
+      ? 'Failed'
+      : toolRunning
+        ? 'Running'
+        : 'Completed';
+    const toolColor = toolFailed ? colors.error : colors.command;
+
     return (
       <View style={styles.toolRow}>
         <View style={[styles.toolBubble, maxWidth > 0 && { maxWidth }]}>
-          <MaterialIcons name="build" size={12} color={colors.command} />
-          <Text style={styles.toolText} selectable>
-            {t('agent_chat.tool_prefix', { tool: event.toolName || event.text })}
-          </Text>
+          <MaterialIcons
+            name={toolIcon}
+            size={13}
+            color={toolColor}
+          />
+          <View style={styles.toolContent}>
+            <Text
+              style={[styles.toolText, toolFailed && { color: colors.error }]}
+              selectable
+            >
+              {t('agent_chat.tool_prefix', { tool: event.toolName || event.text })}
+            </Text>
+            <Text
+              style={[styles.toolState, toolFailed && { color: colors.error }]}
+            >
+              {toolLabel}
+            </Text>
+            {event.toolResult ? (
+              <Text
+                style={styles.toolResult}
+                selectable
+                numberOfLines={4}
+              >
+                {event.toolResult}
+              </Text>
+            ) : null}
+          </View>
+          <Pressable
+            style={styles.toolCopyButton}
+            onPress={copyBubble}
+            accessibilityRole="button"
+            accessibilityLabel="Copy tool result"
+            hitSlop={6}
+          >
+            <MaterialIcons
+              name="content-copy"
+              size={13}
+              color={toolColor}
+            />
+          </Pressable>
         </View>
       </View>
     );
@@ -1080,7 +1288,13 @@ function AgentChatBubble({
     <View style={rowStyle}>
       <View style={[styles.messageBubble, bubbleStyle, maxWidth > 0 && { maxWidth }]}>
         <Text style={styles.roleLabel}>{role}</Text>
-        <Text style={textStyle} selectable>{event.text}</Text>
+        {!isUser && hasDiffContent(event.text) ? (
+          <View style={styles.inlineDiffContainer}>
+            <InlineDiff content={event.text} />
+          </View>
+        ) : (
+          <Text style={textStyle} selectable>{event.text}</Text>
+        )}
         <Text style={styles.timeLabel}>{formatClock(event.timestamp)}</Text>
       </View>
     </View>
@@ -1708,23 +1922,23 @@ function makeStyles(colors: ThemeColorPalette) {
       flex: 1,
     },
     listContent: {
-      paddingHorizontal: 10,
-      paddingVertical: 10,
-      gap: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 14,
+      gap: 10,
     },
     statusRow: {
       alignItems: 'center',
-      paddingVertical: 2,
+      paddingVertical: 3,
     },
     statusPill: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 6,
+      gap: 7,
       borderWidth: 1,
-      borderRadius: 7,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      backgroundColor: withAlpha(colors.surfaceHigh, 0.72),
+      borderRadius: 12,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      backgroundColor: withAlpha(colors.surfaceHigh, 0.78),
     },
     statusDot: {
       width: 6,
@@ -1734,63 +1948,109 @@ function makeStyles(colors: ThemeColorPalette) {
     statusText: {
       color: colors.muted,
       fontFamily: F.family,
-      fontSize: 7,
+      fontSize: 8,
       fontWeight: '700',
       letterSpacing: 0,
     },
     toolRow: {
-      alignItems: 'center',
+      alignItems: 'flex-start',
       paddingVertical: 2,
+      paddingLeft: 4,
     },
     toolBubble: {
       flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
-      borderRadius: 6,
+      alignItems: 'flex-start',
+      gap: 7,
+      borderRadius: 10,
+      borderTopLeftRadius: 4,
       borderWidth: 1,
       borderColor: withAlpha(colors.command, 0.34),
-      paddingHorizontal: 9,
-      paddingVertical: 6,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
       backgroundColor: withAlpha(colors.command, 0.08),
+      elevation: 1,
     },
     toolText: {
+      flex: 1,
       color: colors.command,
       fontFamily: F.family,
       fontSize: 8,
+      lineHeight: 14,
+    },
+    toolContent: {
+      flex: 1,
+    },
+    toolState: {
+      marginTop: 3,
+      color: colors.muted,
+      fontFamily: F.family,
+      fontSize: 7,
+      fontWeight: '700',
+    },
+    toolResult: {
+      marginTop: 5,
+      color: colors.foreground,
+      fontFamily: F.family,
+      fontSize: 8,
       lineHeight: 13,
+      opacity: 0.82,
+    },
+    toolCopyButton: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      minWidth: 24,
+      minHeight: 24,
+      marginLeft: 2,
+      borderRadius: 7,
+      backgroundColor: withAlpha(colors.command, 0.10),
+    },
+    toolContent: {
+      flex: 1,
+    },
+    toolState: {
+      marginTop: 3,
+      color: colors.muted,
+      fontFamily: F.family,
+      fontSize: 7,
+      fontWeight: '700',
     },
     systemRow: {
-      alignItems: 'center',
+      alignItems: 'flex-start',
       paddingVertical: 2,
+      paddingLeft: 4,
     },
     errorBubble: {
       flexDirection: 'row',
       alignItems: 'flex-start',
-      gap: 6,
-      borderRadius: 6,
+      gap: 8,
+      borderRadius: 11,
+      borderTopLeftRadius: 4,
       borderWidth: 1,
-      borderColor: withAlpha(colors.error, 0.38),
-      paddingHorizontal: 9,
-      paddingVertical: 7,
-      backgroundColor: withAlpha(colors.error, 0.08),
+      borderColor: withAlpha(colors.error, 0.42),
+      paddingHorizontal: 11,
+      paddingVertical: 9,
+      backgroundColor: withAlpha(colors.error, 0.09),
+      elevation: 1,
     },
     errorText: {
       flex: 1,
       color: colors.error,
       fontFamily: F.family,
-      fontSize: 8,
-      lineHeight: 13,
+      fontSize: 9,
+      lineHeight: 15,
     },
     approvalBubble: {
       flexDirection: 'row',
       alignItems: 'flex-start',
-      gap: 6,
-      borderRadius: 6,
+      gap: 8,
+      borderRadius: 11,
+      borderTopLeftRadius: 4,
       borderWidth: 1,
-      borderColor: withAlpha(colors.warning, 0.44),
-      paddingHorizontal: 9,
-      paddingVertical: 7,
-      backgroundColor: withAlpha(colors.warning, 0.08),
+      borderColor: withAlpha(colors.warning, 0.48),
+      paddingHorizontal: 11,
+      paddingVertical: 10,
+      backgroundColor: withAlpha(colors.warning, 0.09),
+      elevation: 1,
     },
     approvalContent: {
       flex: 1,
@@ -1807,8 +2067,8 @@ function makeStyles(colors: ThemeColorPalette) {
     approvalText: {
       color: colors.foreground,
       fontFamily: F.family,
-      fontSize: 8,
-      lineHeight: 13,
+      fontSize: 9,
+      lineHeight: 15,
     },
     approvalHint: {
       color: colors.muted,
@@ -1859,52 +2119,61 @@ function makeStyles(colors: ThemeColorPalette) {
     messageRowAssistant: {
       alignItems: 'flex-start',
       paddingVertical: 2,
+      paddingRight: 18,
     },
     messageRowUser: {
       alignItems: 'flex-end',
       paddingVertical: 2,
+      paddingLeft: 18,
     },
     messageBubble: {
-      borderRadius: 7,
-      paddingHorizontal: 10,
-      paddingVertical: 7,
-      minWidth: 120,
+      borderRadius: 15,
+      paddingHorizontal: 13,
+      paddingVertical: 10,
+      minWidth: 110,
       borderWidth: 1,
+      elevation: 1,
     },
     assistantBubble: {
+      borderTopLeftRadius: 5,
       borderColor: withAlpha(colors.border, 0.95),
-      backgroundColor: withAlpha(colors.surfaceHigh, 0.88),
+      backgroundColor: withAlpha(colors.surfaceHigh, 0.94),
     },
     userBubble: {
-      borderColor: withAlpha(colors.accent, 0.48),
+      borderTopRightRadius: 5,
+      borderColor: withAlpha(colors.accent, 0.52),
       backgroundColor: withAlpha(colors.accent, 0.18),
     },
     roleLabel: {
       color: colors.muted,
       fontFamily: F.family,
-      fontSize: 7,
+      fontSize: 8,
       fontWeight: '800',
-      marginBottom: 3,
-      letterSpacing: 0,
+      marginBottom: 5,
+      letterSpacing: 0.2,
     },
     assistantText: {
       color: colors.foreground,
       fontFamily: F.family,
-      fontSize: 9,
-      lineHeight: 15,
+      fontSize: 10,
+      lineHeight: 17,
     },
     userText: {
       color: colors.foreground,
       fontFamily: F.family,
-      fontSize: 9,
-      lineHeight: 15,
+      fontSize: 10,
+      lineHeight: 17,
     },
     timeLabel: {
       color: colors.inactive,
       fontFamily: F.family,
       fontSize: 7,
       alignSelf: 'flex-end',
-      marginTop: 4,
+      marginTop: 6,
+    },
+    inlineDiffContainer: {
+      width: '100%',
+      marginTop: 2,
     },
     empty: {
       flex: 1,

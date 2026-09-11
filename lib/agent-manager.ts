@@ -1250,6 +1250,8 @@ export async function runAgentNow(
     waitTimeoutMs?: number;
     pollMs?: number;
     runStartedAtMs?: number;
+    /** Optional prompt supplied directly by the Chat UI for an attended run. */
+    promptOverride?: string;
     /** Exit-code-returning command runner (hooks/use-native-exec's execCommand).
      *  REQUIRED to unlock optimistic (rollback-type) execution: without it there
      *  is no way to drive git, so no savepoint, so no undo, so the normal
@@ -1257,7 +1259,7 @@ export async function runAgentNow(
      *  not pass it simply never gets the optimistic path. */
     savepointRunner?: RollbackRunCommand;
   } = {}
-): Promise<void> {
+): Promise<AgentRunLog | undefined> {
   const existing = inFlightAgentRuns.get(agentId);
   if (existing) {
     logWarn('AgentRunConcurrency', `runAgentNow(${agentId}) called while a run is already in flight — joining it instead of starting a second one`);
@@ -1283,9 +1285,10 @@ async function runAgentNowInner(
     waitTimeoutMs?: number;
     pollMs?: number;
     runStartedAtMs?: number;
+    promptOverride?: string;
     savepointRunner?: RollbackRunCommand;
   } = {}
-): Promise<void> {
+): Promise<AgentRunLog | undefined> {
   assertSafeAgentId(agentId);
   // Global kill-switch: while halted, refuse manual runs too (not just scheduled).
   if (useAgentStore.getState().halted) {
@@ -1360,6 +1363,10 @@ async function runAgentNowInner(
     `agent ${agentId}: stepCount=${normalizeSteps(orchestrationAgent?.orchestration).length} isOrchestrated=${orchestrated}`
   );
   if (orchestrationAgent && orchestrated) {
+    const attendedOrchestrationAgent = options.promptOverride?.trim()
+      ? { ...orchestrationAgent, prompt: options.promptOverride.trim() }
+      : orchestrationAgent;
+
     // The post-chain restore materialize deliberately gets the STORED agent,
     // not the rehydrated one: materializeAgentBody writes `<id>.json` from its
     // `agent` argument (the "metadata stores the ORIGINAL agent" rule) while
@@ -1367,11 +1374,14 @@ async function runAgentNowInner(
     // the stored shape keeps the restored on-disk state byte-identical to what
     // install-time materialize produces, instead of silently baking a reused
     // skill's steps into the agent's persistent record.
-    await runAgentOrchestrated(orchestrationAgent, runCommand, options, storedAgent);
-    return;
+    await runAgentOrchestrated(attendedOrchestrationAgent, runCommand, options, storedAgent);
+    return undefined;
   }
   const runStartedAtMs = options.runStartedAtMs ?? Date.now() - 5_000;
-  const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  const storedRunAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  const agent = storedRunAgent && options.promptOverride?.trim()
+    ? { ...storedRunAgent, prompt: options.promptOverride.trim() }
+    : storedRunAgent;
   if (agent) {
     // ─── Optimistic (rollback-type) execution decision ──────────────────────
     // THE choke point. Every condition below must hold; each one is a separate
@@ -1423,6 +1433,7 @@ async function runAgentNowInner(
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await updateReusedSkillFromRun(agentId, runCommand);
+  return completedLog;
 }
 
 /**
@@ -2148,6 +2159,7 @@ async function runAgentOrchestratedBody(
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await updateReusedSkillFromRun(agentId, runCommand);
+  return completedLog;
 }
 
 /** List the agent's run-log file paths on disk (best-effort). */

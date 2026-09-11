@@ -1075,6 +1075,14 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // request and never reaches a model/shell. secret-guard still wins (a secret
   // forces routeResolution.tool to local above, so consentWebTool is false then).
   let tool: ToolChoice = routeResolution.tool;
+
+  // Coding Agent is an explicit user-selected tool. Keep it on the normal
+  // agent execution path so agent-manager, logging, scheduling, approvals,
+  // and result handling remain unchanged.
+  if (agent.tool?.type === 'coding-agent') {
+    tool = agent.tool;
+  }
+
   // P1: when an autonomous web-mandatory run keeps its keyed web backend, bake a
   // Codex fallback into the on-disk script so the UNATTENDED scheduled fire (which
   // runs the .sh directly via AlarmManager — no foreground TS ladder) still
@@ -5605,6 +5613,250 @@ exit 1
 `;
 }
 
+function codingAgentCommand(
+  escapedPrompt: string,
+  resultVar: string,
+  systemPromptJson: string,
+  model: string | undefined,
+  options: ToolCommandOptions,
+): string {
+  const selectedModel = (model || '${CODING_AGENT_MODEL:-}')
+    .replace(/'/g, "'\\''");
+
+  return `CODING_AGENT_MODEL=${shellQuote(selectedModel)}
+CODING_AGENT_PROMPT=${shellQuote(escapedPrompt)}
+CODING_AGENT_SYSTEM=${shellQuote(systemPromptJson)}
+CODING_AGENT_AUTONOMOUS=${options.autonomous ? '1' : '0'}
+CODING_AGENT_RESULT=${resultVar}
+CODING_AGENT_ENDPOINT=\${CODING_AGENT_ENDPOINT:-}
+CODING_AGENT_API_KEY=\${CODING_AGENT_API_KEY:-}
+CODING_AGENT_WORKSPACE=\${SHELLY_WORKSPACE:-\$(pwd)}
+
+if [ -z "\${CODING_AGENT_MODEL:-}" ]; then
+  echo 'Coding Agent model is not configured.' > "$CODING_AGENT_RESULT"
+  touch "$BACKEND_ERROR_FILE"
+elif [ -z "\${CODING_AGENT_ENDPOINT:-}" ]; then
+  echo 'Coding Agent endpoint is not configured.' > "$CODING_AGENT_RESULT"
+  touch "$BACKEND_ERROR_FILE"
+else
+  CODING_AGENT_TMP=\${TMPDIR:-/tmp}/shelly-coding-agent-$$
+  mkdir -p "$CODING_AGENT_TMP"
+
+  CODING_AGENT_STATE="$CODING_AGENT_TMP/state.json"
+  CODING_AGENT_RESPONSE="$CODING_AGENT_TMP/response.json"
+  CODING_AGENT_TOOL_RESULT="$CODING_AGENT_TMP/tool-result.txt"
+  CODING_AGENT_RUNTIME="$PWD/scripts/coding-agent-runtime.mjs"
+
+  if [ ! -f "$CODING_AGENT_RUNTIME" ]; then
+    echo 'Coding Agent runtime is missing.' > "$CODING_AGENT_RESULT"
+    touch "$BACKEND_ERROR_FILE"
+  else
+    node "$CODING_AGENT_RUNTIME" init \
+      --state "$CODING_AGENT_STATE" \
+      --prompt "$CODING_AGENT_PROMPT" \
+      --system "$CODING_AGENT_SYSTEM" \
+      --workspace "$CODING_AGENT_WORKSPACE" \
+      --model "$CODING_AGENT_MODEL" \
+      --endpoint "$CODING_AGENT_ENDPOINT" \
+      --api-key "$CODING_AGENT_API_KEY"
+
+    CODING_AGENT_ITERATION=0
+    CODING_AGENT_MAX_ITERATIONS=50
+
+    while [ "$CODING_AGENT_ITERATION" -lt "$CODING_AGENT_MAX_ITERATIONS" ]; do
+      CODING_AGENT_ITERATION=$((CODING_AGENT_ITERATION + 1))
+      rm -f "$CODING_AGENT_RESPONSE" "$CODING_AGENT_TOOL_RESULT"
+
+      if ! node "$CODING_AGENT_RUNTIME" step \
+        --state "$CODING_AGENT_STATE" \
+        --response "$CODING_AGENT_RESPONSE"; then
+        echo 'Coding Agent runtime step failed.' > "$CODING_AGENT_RESULT"
+        touch "$BACKEND_ERROR_FILE"
+        break
+      fi
+
+      CODING_AGENT_KIND=$(node "$CODING_AGENT_RUNTIME" field \
+        --file "$CODING_AGENT_RESPONSE" --field kind 2>/dev/null || true)
+
+      if [ "$CODING_AGENT_KIND" = "final" ]; then
+        node "$CODING_AGENT_RUNTIME" field \
+          --file "$CODING_AGENT_RESPONSE" --field text > "$CODING_AGENT_RESULT" 2>/dev/null || true
+        break
+      fi
+
+      if [ "$CODING_AGENT_KIND" = "error" ]; then
+        node "$CODING_AGENT_RUNTIME" field \
+          --file "$CODING_AGENT_RESPONSE" --field text > "$CODING_AGENT_RESULT" 2>/dev/null || true
+        touch "$BACKEND_ERROR_FILE"
+        break
+      fi
+
+      if [ "$CODING_AGENT_KIND" != "tool_call" ]; then
+        echo 'Coding Agent returned an invalid runtime response.' > "$CODING_AGENT_RESULT"
+        touch "$BACKEND_ERROR_FILE"
+        break
+      fi
+
+      CODING_AGENT_TOOL=$(node "$CODING_AGENT_RUNTIME" field \
+        --file "$CODING_AGENT_RESPONSE" --field tool 2>/dev/null || true)
+
+      CODING_AGENT_ARGS=$(node "$CODING_AGENT_RUNTIME" field \
+        --file "$CODING_AGENT_RESPONSE" --field arguments 2>/dev/null || echo '{}')
+
+      CODING_AGENT_PATH=$(node "$CODING_AGENT_RUNTIME" arg \
+        --json "$CODING_AGENT_ARGS" --field path 2>/dev/null || true)
+
+      CODING_AGENT_CONTENT=$(node "$CODING_AGENT_RUNTIME" arg \
+        --json "$CODING_AGENT_ARGS" --field content 2>/dev/null || true)
+
+      CODING_AGENT_COMMAND=$(node "$CODING_AGENT_RUNTIME" arg \
+        --json "$CODING_AGENT_ARGS" --field command 2>/dev/null || true)
+
+      CODING_AGENT_CWD=$(node "$CODING_AGENT_RUNTIME" arg \
+        --json "$CODING_AGENT_ARGS" --field cwd 2>/dev/null || true)
+
+      CODING_AGENT_TOOL_OK=1
+
+      # Keep every filesystem target and command cwd inside the authorized
+      # workspace before invoking any capability.
+      coding_agent_safe_path() {
+        case "$1" in
+          /*|../*|*/../*|*/..)
+            return 1
+            ;;
+        esac
+        return 0
+      }
+
+      case "$CODING_AGENT_TOOL" in
+        list_files)
+          if ! coding_agent_safe_path "$CODING_AGENT_PATH"; then
+            echo 'Path escapes the authorized workspace.' > "$CODING_AGENT_TOOL_RESULT"
+            CODING_AGENT_TOOL_OK=0
+            continue
+          fi
+          CODING_AGENT_TARGET="$CODING_AGENT_WORKSPACE/$CODING_AGENT_PATH"
+          case "$CODING_AGENT_TARGET" in
+            "$CODING_AGENT_WORKSPACE"|"$CODING_AGENT_WORKSPACE"/*)
+              find "$CODING_AGENT_TARGET" -maxdepth 1 -mindepth 1 \
+                -printf '%y %f\n' 2>/dev/null |
+                sort > "$CODING_AGENT_TOOL_RESULT" || CODING_AGENT_TOOL_OK=0
+              ;;
+            *)
+              echo 'Path escapes the authorized workspace.' > "$CODING_AGENT_TOOL_RESULT"
+              CODING_AGENT_TOOL_OK=0
+              ;;
+          esac
+          ;;
+
+        read_file)
+          if ! coding_agent_safe_path "$CODING_AGENT_PATH"; then
+            echo 'Path escapes the authorized workspace.' > "$CODING_AGENT_TOOL_RESULT"
+            CODING_AGENT_TOOL_OK=0
+            continue
+          fi
+          CODING_AGENT_TARGET="$CODING_AGENT_WORKSPACE/$CODING_AGENT_PATH"
+          case "$CODING_AGENT_TARGET" in
+            "$CODING_AGENT_WORKSPACE"/*)
+              if [ -f "$CODING_AGENT_TARGET" ]; then
+                cat "$CODING_AGENT_TARGET" > "$CODING_AGENT_TOOL_RESULT" || CODING_AGENT_TOOL_OK=0
+              else
+                echo 'Requested path is not a file.' > "$CODING_AGENT_TOOL_RESULT"
+                CODING_AGENT_TOOL_OK=0
+              fi
+              ;;
+            *)
+              echo 'Path escapes the authorized workspace.' > "$CODING_AGENT_TOOL_RESULT"
+              CODING_AGENT_TOOL_OK=0
+              ;;
+          esac
+          ;;
+
+        search_text)
+          if [ -z "$CODING_AGENT_CONTENT" ]; then
+            echo 'Search pattern cannot be empty.' > "$CODING_AGENT_TOOL_RESULT"
+            CODING_AGENT_TOOL_OK=0
+          else
+            grep -Rni --exclude-dir=.git --exclude-dir=node_modules \
+              "$CODING_AGENT_CONTENT" "$CODING_AGENT_WORKSPACE" \
+              > "$CODING_AGENT_TOOL_RESULT" 2>/dev/null
+            CODING_AGENT_GREP_STATUS=$?
+            if [ "$CODING_AGENT_GREP_STATUS" -gt 1 ]; then
+              CODING_AGENT_TOOL_OK=0
+            fi
+          fi
+          ;;
+
+        write_file)
+          if ! coding_agent_safe_path "$CODING_AGENT_PATH"; then
+            echo 'Path escapes the authorized workspace.' > "$CODING_AGENT_TOOL_RESULT"
+            CODING_AGENT_TOOL_OK=0
+            continue
+          fi
+          CODING_AGENT_TARGET="$CODING_AGENT_WORKSPACE/$CODING_AGENT_PATH"
+          case "$CODING_AGENT_TARGET" in
+            "$CODING_AGENT_WORKSPACE"/*)
+              printf '%s' "$CODING_AGENT_CONTENT" > "$CODING_AGENT_TMP/write-source.txt"
+              if ! cap_fs_write_file \
+                "$CODING_AGENT_TARGET" \
+                "$CODING_AGENT_TMP/write-source.txt"; then
+                echo 'Shelly filesystem capability rejected the write.' > "$CODING_AGENT_TOOL_RESULT"
+                CODING_AGENT_TOOL_OK=0
+              else
+                echo "Wrote $CODING_AGENT_PATH" > "$CODING_AGENT_TOOL_RESULT"
+              fi
+              ;;
+            *)
+              echo 'Path escapes the authorized workspace.' > "$CODING_AGENT_TOOL_RESULT"
+              CODING_AGENT_TOOL_OK=0
+              ;;
+          esac
+          ;;
+
+        run_command)
+          if ! cap_workspace_exec \
+            "$CODING_AGENT_COMMAND" \
+            "${CODING_AGENT_CWD:-$CODING_AGENT_WORKSPACE}" \
+            "$CODING_AGENT_TOOL_RESULT" \
+            "$CODING_AGENT_TMP/tool-error.txt"; then
+            if [ -s "$CODING_AGENT_TMP/tool-error.txt" ]; then
+              cat "$CODING_AGENT_TMP/tool-error.txt" >> "$CODING_AGENT_TOOL_RESULT"
+            fi
+            CODING_AGENT_TOOL_OK=0
+          fi
+          ;;
+
+        git_diff)
+          git -C "$CODING_AGENT_WORKSPACE" diff -- \
+            > "$CODING_AGENT_TOOL_RESULT" 2>&1 || CODING_AGENT_TOOL_OK=0
+          ;;
+
+        *)
+          echo "Unknown Coding Agent tool: $CODING_AGENT_TOOL" > "$CODING_AGENT_TOOL_RESULT"
+          CODING_AGENT_TOOL_OK=0
+          ;;
+      esac
+
+      node "$CODING_AGENT_RUNTIME" result \
+        --state "$CODING_AGENT_STATE" \
+        --file "$CODING_AGENT_TOOL_RESULT" \
+        --ok "$CODING_AGENT_TOOL_OK" || {
+          echo 'Failed to return tool result to Coding Agent.' > "$CODING_AGENT_RESULT"
+          touch "$BACKEND_ERROR_FILE"
+          break
+        }
+
+      if [ "$CODING_AGENT_ITERATION" -eq "$CODING_AGENT_MAX_ITERATIONS" ]; then
+        echo "Coding Agent stopped after $CODING_AGENT_MAX_ITERATIONS iterations." > "$CODING_AGENT_RESULT"
+        touch "$BACKEND_ERROR_FILE"
+      fi
+    done
+
+    rm -rf "$CODING_AGENT_TMP"
+  fi
+fi`;
+}
+
 function generateToolCommand(
   tool: ToolChoice,
   escapedPrompt: string,
@@ -5763,6 +6015,19 @@ ${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
         label: 'OpenRouter',
         authRef: 'openrouter',
       }, options.stepSkipPromptCompose ?? false);
+    case 'coding-agent':
+      /*
+       * Coding Agent is intentionally a separate execution path from Codex.
+       * The actual tool loop is implemented by the coding-agent runtime and
+       * receives the existing Shelly capability boundary from this executor.
+       */
+      return codingAgentCommand(
+        escapedPrompt,
+        resultVar,
+        systemPromptJson,
+        tool.model,
+        options,
+      );
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, systemPromptJson, tool.localModel, tool.codexCmd, options.policyJson ?? '');
     case 'auto':

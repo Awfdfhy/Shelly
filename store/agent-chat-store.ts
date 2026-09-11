@@ -59,6 +59,8 @@ export type AgentChatEvent = {
   text: string;
   status?: AgentChatStatus;
   toolName?: string;
+  toolState?: 'running' | 'completed' | 'failed';
+  toolResult?: string;
   timestamp: number;
   rawEvent?: unknown;
 };
@@ -1321,7 +1323,7 @@ function scouterRecentEventToAgentChatEvent(event: ScouterRecentEvent): AgentCha
   }
 
   if (eventType === 'PRE_TOOL_USE' && (toolName || commandSummary)) {
-    const text = toolName || commandSummary || 'tool';
+    const text = commandSummary || toolName || 'tool';
     return [{
       ...base,
       id: base.id || eventId(codexSessionId, 'tool_start', timestamp, text),
@@ -1330,11 +1332,12 @@ function scouterRecentEventToAgentChatEvent(event: ScouterRecentEvent): AgentCha
       text,
       status: 'tool_running',
       toolName: toolName || text,
+      toolState: 'running',
     }];
   }
 
   if (eventType === 'POST_TOOL_USE' && (toolName || commandSummary)) {
-    const text = toolName || commandSummary || 'tool';
+    const text = commandSummary || toolName || 'tool';
     return [{
       ...base,
       id: base.id || eventId(codexSessionId, 'tool_result', timestamp, text),
@@ -1342,6 +1345,11 @@ function scouterRecentEventToAgentChatEvent(event: ScouterRecentEvent): AgentCha
       kind: 'tool_result',
       text,
       toolName: toolName || text,
+      toolState: 'completed',
+      toolResult:
+        lastMessage && lastMessage !== text
+          ? lastMessage
+          : undefined,
     }];
   }
 

@@ -22,6 +22,7 @@
  * lives in lib/agent-runs-view.ts so it is unit-testable outside RN.
  */
 import React from 'react';
+import * as Clipboard from 'expo-clipboard';
 import {
   ActivityIndicator,
   Alert,
@@ -41,6 +42,71 @@ import type { Agent, AgentRunLog } from '@/store/types';
 import { runAgentNow, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { shouldOfferSkillSave, useSkillSaveOffer } from '@/hooks/use-skill-save-offer';
+
+async function copyAgentRunForAI(run: AgentRunLog) {
+  const sections = [
+    'SHELLY AGENT RUN REPORT',
+    '=======================',
+    '',
+    `Agent ID: ${run.agentId}`,
+    `Timestamp: ${new Date(run.timestamp).toISOString()}`,
+    `Status: ${run.status}`,
+    `Duration: ${run.durationMs} ms`,
+    `Tool used: ${run.toolUsed}`,
+    '',
+    'OUTPUT',
+    '------',
+    run.outputPreview?.trim() || '(no output)',
+    '',
+    run.errorMessage
+      ? `ERROR
+-----
+${run.errorMessage}
+
+`
+      : '',
+    run.savedPath
+      ? `Saved path: ${run.savedPath}
+`
+      : '',
+    run.savedPathMirror
+      ? `Saved path mirror: ${run.savedPathMirror}
+`
+      : '',
+    run.routeDecision
+      ? `ROUTE DECISION
+--------------
+${JSON.stringify(run.routeDecision, null, 2)}
+
+`
+      : '',
+    run.steps?.length
+      ? `ORCHESTRATION STEPS
+--------------------
+${JSON.stringify(run.steps, null, 2)}
+
+`
+      : '',
+    run.actionResults?.length
+      ? `ACTION RESULTS
+--------------
+${JSON.stringify(run.actionResults, null, 2)}
+
+`
+      : '',
+  ];
+
+  const text = sections.join('\n').trim();
+
+  if (!text) {
+    Alert.alert('Nothing to copy', 'This agent run has no report data.');
+    return;
+  }
+
+  await Clipboard.setStringAsync(text);
+  Alert.alert('Copied', 'Full agent report copied for AI.');
+}
+
 import {
   buildAgentRunGroups,
   buildRouteDecisionRows,
@@ -389,6 +455,23 @@ export default function AgentRunsPane() {
                             <Text style={[styles.body, { color: colors.foreground }]}>
                               {run.outputPreview?.trim() || t('agent_runs.no_output')}
                             </Text>
+
+                            {run.outputPreview?.trim() ? (
+                              <TouchableOpacity
+                                onPress={() => void copyAgentRunForAI(run)}
+                                style={styles.copyOutputButton}
+                              >
+                                <MaterialIcons
+                                  name="content-copy"
+                                  size={16}
+                                  color={colors.accent}
+                                />
+                                <Text style={[styles.copyOutputText, { color: colors.accent }]}>
+                                  Copy for AI
+                                </Text>
+                              </TouchableOpacity>
+                            ) : null}
+
                             {run.savedPath ? (
                               <Text style={[styles.body, { color: colors.muted }]}>
                                 {t('agent_runs.saved_path', { path: run.savedPath })}
@@ -639,6 +722,21 @@ const styles = StyleSheet.create({
   rowStatus: { fontSize: 12, fontWeight: '600' },
   rowMeta: { fontSize: 11 },
   detail: { borderTopWidth: 1, padding: 10, gap: 10 },
+  copyOutputButton: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  copyOutputText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
   section: { gap: 3 },
   sectionTitle: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase' },
   kv: { flexDirection: 'row', gap: 6 },
