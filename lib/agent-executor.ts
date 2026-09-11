@@ -5816,7 +5816,7 @@ else
         run_command)
           if ! cap_workspace_exec \
             "$CODING_AGENT_COMMAND" \
-            "${CODING_AGENT_CWD:-$CODING_AGENT_WORKSPACE}" \
+            "\${CODING_AGENT_CWD:-$CODING_AGENT_WORKSPACE}" \
             "$CODING_AGENT_TOOL_RESULT" \
             "$CODING_AGENT_TMP/tool-error.txt"; then
             if [ -s "$CODING_AGENT_TMP/tool-error.txt" ]; then

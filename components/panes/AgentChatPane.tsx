@@ -1995,25 +1995,6 @@ function makeStyles(colors: ThemeColorPalette) {
       lineHeight: 13,
       opacity: 0.82,
     },
-    toolCopyButton: {
-      alignItems: 'center',
-      justifyContent: 'center',
-      minWidth: 24,
-      minHeight: 24,
-      marginLeft: 2,
-      borderRadius: 7,
-      backgroundColor: withAlpha(colors.command, 0.10),
-    },
-    toolContent: {
-      flex: 1,
-    },
-    toolState: {
-      marginTop: 3,
-      color: colors.muted,
-      fontFamily: F.family,
-      fontSize: 7,
-      fontWeight: '700',
-    },
     systemRow: {
       alignItems: 'flex-start',
       paddingVertical: 2,
